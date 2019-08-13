@@ -4,8 +4,8 @@ findspark.init()
 from numpy import array
 from pyspark.context import SparkContext
 from pyspark.mllib.util import MLUtils
-from pyspark.mllib.tree import RandomForest
-from pyspark.mllib.regression import LabeledPoint
+from pyspark.mllib.tree import RandomForest, GradientBoostedTrees
+from pyspark.mllib.regression import LabeledPoint, LinearRegressionWithSGD
 
 #set up sparkcontext
 sc = SparkContext("local", "NBA Salary Predictor")
@@ -37,8 +37,14 @@ print("Filtered Stats")
 #smallDataSet = csvSalaries.top(30)
 
 def createLabeledPoint(salaries, stats):
+    nameID = int(salaries[0])
+    nameConversion = nameID/1000
+
+
+
     #name = salaries[1]
-    salary = int(salaries[3])
+    salary = int(salaries[3]) + nameConversion
+
     pos = numeratePosition(stats[3])
     age = int(stats[4])
     gamesPlayed = int(stats[6])
@@ -127,22 +133,35 @@ dataSet = sc.parallelize(labeledArray)
 #Split the data into testing and training
 (trainingData, testData) = dataSet.randomSplit([.7, .3])
 
-#Create the model using the training data and generate predictions using the test data
-model = RandomForest.trainRegressor(trainingData, categoricalFeaturesInfo={}, numTrees=5, impurity='variance', maxDepth=4, maxBins=32)
-predictions = model.predict(testData.map(lambda x: x.features))
 
 
-results = predictions.collect()
+#Create the Random Forest model using the training data and generate predictions using the test data
+modelRF = RandomForest.trainRegressor(trainingData, categoricalFeaturesInfo={}, numTrees=5, impurity='variance', maxDepth=4, maxBins=32)
+predictionsRF = modelRF.predict(testData.map(lambda x: x.features))
+
+#Gradient Boosted Model
+modelGB = GradientBoostedTrees.trainRegressor(trainingData, categoricalFeaturesInfo={}, numIterations=3)
+predictionsGB = modelGB.predict(testData.map(lambda x: x.features))
+
+#Linear Regression Model
+modelLin = LinearRegressionWithSGD.train(trainingData, iterations=100, step=0.00000001)
+predictionsLin = modelLin.predict(testData.map(lambda x: x.features))
+
+resultsRF = predictionsRF.collect()
+resultsGB = predictionsGB.collect()
+resultsLin = predictionsLin.collect()
 testDataList = testData.collect()
 
 #iterator for the test data array
 count = 0
-
-for item in results:
+print("Random Forest")
+for item in resultsRF:
     #Retrieve the actual salary from the labeledpoint
     salaryMatch = testDataList[count].label
-    #Find the player who has this same salary
-    playerMatch = csvSalaries.filter(lambda x: float(x[3])==salaryMatch).first()
+    #Find the player who has this same salaryc
+
+    salaryConvert = (salaryMatch - int(salaryMatch))*1000
+    playerMatch = csvSalaries.filter(lambda x: int(x[0])==int(salaryConvert)).first()
     print(playerMatch[1])
     
     #Print the salary from the csv file
@@ -153,3 +172,22 @@ for item in results:
     #Print the salary predicted by the model
     print("Predicted: ", end="")
     print(item)
+
+
+#Calculate the mean square error RF
+labelsAndPredictionsRF = testData.map(lambda lp: lp.label).zip(predictionsRF)
+testForestMSE = labelsAndPredictionsRF.map(lambda lp: (lp[0] - lp[1]) * (lp[0] - lp[1])).sum() /\
+        float(testData.count())
+print('Test Mean Squared Error: Random Forest = ' + str(testForestMSE))
+
+#GB
+labelsAndPredictionsGB = testData.map(lambda lp: lp.label).zip(predictionsGB)
+testGradientMSE = labelsAndPredictionsGB.map(lambda lp: (lp[0] - lp[1]) * (lp[0] - lp[1])).sum() /\
+        float(testData.count())
+print('Test Mean Squared Error: Gradient Boosted = ' + str(testGradientMSE))
+
+#Lin
+labelsAndPredictionsLin = testData.map(lambda lp: lp.label).zip(predictionsLin)
+testLinMSE = labelsAndPredictionsLin.map(lambda lp: (lp[0] - lp[1]) * (lp[0] - lp[1])).sum() /\
+        float(testData.count())
+print('Test Mean Squared Error: Linear = ' + str(testLinMSE))
